@@ -1,5 +1,10 @@
 # 6.5_diesel_src_decomp_OBD2
-Hey all, started decoding this months ago, was having fun with it, but wanted to see if AI could help expedite an assembly for an easier time. I would not necessarily trust these files as I don't have a 6.5 anymore to test on, I was just bored. 
+Hey all, started decoding this months ago, was having fun with it, but wanted to see if AI could help expedite an assembly for an easier time. I would not necessarily trust these files as I don't have a 6.5 anymore to test on, I was just bored.
+
+BPDP.bin is an OBD1 file, used it in a hex compare to track if these share similar cals, they do, addresses are for sure moved
+but the spacing remains the same
+
+16216588(09389101) is the cal I pulled for initial assessment off of pcmhacking, thanks quadstar87 for the initial finding. Other tables do rear their head once you compare the other calibrations to eachother, 0x200b seems to hold the key for options
 
 Use MINIIDE for assembling, it is banked code so you have to split the assembly in half build them then recombine
 
