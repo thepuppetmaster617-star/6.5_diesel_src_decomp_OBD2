@@ -1,0 +1,289 @@
+Stanadyne DS4 and GM PCM.... yea, quite a piece of work.
+
+The Stanadyne DS4 injection pump has a few issues... obviously. So does the software in the PCM. Let's start with my first rant... a fair number of people bitch at the EPA and blame them for all of the automaker's woes and all of this emission control and 'other crap we don't need'. Well, that would be acceptable, perhaps, if you had a life expectancy of, oh, twenty five years or maybe thirty, thanks to automobile pollution. Automotive emission controls is one of the more important inventions in automobiles. Well, maybe not. Perhaps we would be all driving electrically-operated vehicles instead. Emission controls really do not add that much cost to a vehicle. Safety equipment such as air bags, crush zones, and crash testing all add lots of cost and time and complexity. We complain about those, too, unless we're on the receiving end of that safety equipment - if it saves your life. The radios and DVD players, now they add cost and complexity. All of the gadgets like windshield wipers that run automagically in the rain, or windows that open so you can close the door, then close once you're done, that's added (and probably unnecessary) complexity. Electronic engine management is not that expensive, and even many of the developing countries (India, China) have been running electronic diesel controls for a few years now - it can't cost that much. Delphi is building common-rail diesel injection systems for LAWNMOWER ENGINES! That can't be terribly expensive!
+
+Why does the 6.5L have so many problems? People tend to blame electronics (or the EPA) but there has not been a highway truck built since the late 1980's without electronic engine management. The well-loved Detroit series 40, 50, and 60 are all electronically controlled - the engines were designed that way. Even the last V92 family received electronic fuel injection. The Cat 3406, Cummins ISX, (and ISL, ISC, and ISB), Powerstroke, and DT466E - these are engines that last a million miles between rebuilds, and all electronically controlled. You can breathe the air thanks to all of this technology. You want to see what happens when you don't do this? Go visit India and China and Russia. Visit a bus barn in Hungary or Brazil full of Rabas or 'Old Smoky' Mercedes OM352. So what went wrong? Let's look at what we are working with....
+
+The 1994-1995 6.5L TD ECM consists of a fairly low-tech set of chips. The main processor is a 68HC11F1 running with a 12.59 MHz crystal. There's about 48k of code and calibration space available. A Delphi IOR chip supplies 240 bytes of RAM and also some I/O ports and four PWM channels. A configurable timer chip is used to process pulses from the diesel pump's optical encoder and also the CKP signal. Not a big problem except that the people writing the software screwed up a bit. There are a few bugs in the software. The ones I have found include:
+
+The software filter used to prevent ECTS-based tables from chattering with sensor noise is not functional. There is supposed to be a deadband of 2 degrees C, however, that deadband comparison is screwed up because of a missing # sign in a CMPB instruction in the source code. Something of note is that the OBD-II version of the software does not correct this.
+A flag fetch from calibration does not get the correct mask. The problem here is a missing # sign in a BIT instruction in the source code. There are a couple of cases of this. One of them may actually cause a fuel dropout in the case of certain unrelated DTC's setting. It looks like that part of the code was rewritten for the OBD-II version.
+The SCI interrupt is not equipped to be interrupted by the CKP, CMP, VSS, or OSS interrupts. That would be fine if the interrupt just stored the appropriate data and called the main program loop to actually form an SCI message. But it doesn't. So what happens is you miss interrupts if you have a scan tool connected. The correct solution would have been to disable the 160 Hz interrupt, disable the SCI interrupt, re-enable global interrupts, format the outgoing data stream, disable global interrupts, re-enable the SCI interrupt, re-enable the 160 Hz interrupt, then return from SCI interrupt. The OBD-II version checks during long interrupt-disabled conditions now so this is not a problem any more.
+The subroutine used to calculate the desired EGR pressure is called twice in a row. This was corrected in the OBD-II version of the code.
+In several spots, a double-precision arithmetic operation (subd, addd) only loads half of the input, leaving the other register containing some random stuff.
+In several spots, engine speed (and sometimes other things - but engine speed happens multiple times) is calculated, then is just thrown away.
+Other than that, the ECM probably will do its job, more-or-less all of the time. Automotive ECM's have been shown to be rather reliable and there's no particular reason to think this one has a big problem.
+
+The pump driver module has a reputation of blowing up. Yea, probably it deserves it. To start with, it appears to use a couple of huge bipolar transistors configured as a high-side switch, and also as a linear current regulator. I don't think I would do it that way. Using MOSFETs to switch the solenoid valve along with a high-speed PWM current regulator would be a much better solution IMHO. The Cummins ISC system, which uses a similar pump control solenoid, uses PWM control. The current trace is a straightforward linear 12A current limit. That would make a peak power dissipation (not including clamping) of around 100 watts. This might be interesting for someone who is circuit-minded.
+
+The optical sensor has issues. It is bathed in diesel fuel, and is at the mercy of whatever is in there. Air bubbles? Funny thing is that Bosch has a VP44 pump with an optical encoder, as well, and it does not have a bad reputation. Does an 8-cylinder VP44 pump exist? Perhaps a good retrofit kit would be a VP44 and a new ECM.
+
+The diesel pump. It is a solenoid-controlled rotary pump. There are several ways of modulating fuel and timing in an electronically controlled diesel pump. They are...
+
+Sliding rotor (EPIC). This limits plunger travel mechanically, using hydraulic pressure. The ECM controls the pressure using a pair of solenoid valves.
+Mechanical start-of-injection, solenoid spill (Lucas, Stanadyne DS4 in pump-spill mode). Start-of-injection is mechanical so the stresses on the pump are only huge. End-of-injection has some pretty substantial forces associated with it.
+In-line sleeve pump with prestroke control. Injection quantity is controlled via fuel rack, start-of-injection is controlled by timing rack. Based on the old Bosch inline pump, used on John Deere tractors, and a Zexel version is used on some older Isuzu trucks.
+Control collar (Bosch VP37). This controls fuel quantity usually via fuel throttling (cavitation of the pump) or stroke control. Timing is controlled via servo-controlled timing piston, similar to mechanical pumps. Injection timing must be measured with an electromagnetic injector.
+Solenoid SOI, solenoid spill (Bosch VP30, VP44, Stanadyne DS4 in spill-pump-spill mode). Most flexible until we get to common rail (Duramax).
+Brute Force Electronic Unit Injector, spill-pump-spill.
+Diesel timed injector. Uses liquid plunger made with diesel fuel to vary plunger length and injection timing, Cummins ISX.
+Common rail or distributor brute-force injection. Uses a solenoid valve as in a straightforward metering system (very much like a gasoline fuel injector). Duramax, Cummins ISC, Smart ForTwo CDI.
+The design requirements for solenoid spill are substantial. Stanadyne didn't get one or two of them right. Things that they might have got not-quite-right:
+
+Slope of cam too aggressive (desired pressure or pumping rate too high) for materials.
+Pump cavitation is causing an issue.
+Resonances in the pump causing multiplication of forces beyond expected values.
+The pump appears to rely on centrifugal force to pull the plungers out - the whole case seems to be pressurized about equally. I think that is a function of the fill/spill solenoid arrangement. If the inlet of the injection pump is at a significantly higher pressure than the rest of the pump, more solid operation should be assured. I'm not 100% sure on this but the pumping plunger assembly looks a bit suspect to me. I'd probably want to get a dead pump and disassemble it to figure out if this would be an issue or not, perhaps my understanding of the internal plumbing and case pressure control is flawed.
+16183977 ECM (1994-1995)
+Here is a photo of the guts of the 1994 to 1995 ECM. I have never seen a photo of this ECM's guts, so I took the liberty of making this one. I think a lot of people get lost from here down, but what follows is something that any ECM hacker probably could figure out with a meter and the ECM in front of them.
+
+ 
+
+Parts on the board of note:
+
+16055199 = voltage regulator
+16166240 = quad driver module with diagnostics
+16034993 = stepper motor driver
+16064606 = serial output driver
+16084523 = SO-20 VR sensor amplifier for transmission input shaft speed
+16158016 = 74HC4067 analogue mux
+45555 = LM339 comparator
+48025 = SO-14 quad NAND gate, 74HC00
+27375 = SO-14 dual AND/NOR gate, 74HC51
+50610 = LM2904 dual op-amp
+49226 = LM393 dual comparator
+27377 = LM2902 quad op-amp
+66285 = PLCC-68, Delphi IOR, mapped at $1400
+16156598 = PLCC-68, MC68HC11F1, 3MHz rating
+16180988 = PLCC-68, timer I/O module
+EPROM carrier, T+B 'BLUE' carrier
+I/O Assignments:
+
+AN0 = APP
+AN1 = APP
+AN2 = Transmission force current monitor
+AN3 = APP
+AN4 = battery voltage
+AN5 = boost pressure, via Sallen-Key filter
+AN6 = analogue mux
+AN7 = EGR/baro pressure, via Sallen-Key filter
+PAI = 4004 pulse per mile VSS input
+TIC1 = Pin C15, VSS
+TIC2 = Pin C12, transmission input shaft speed, through 84523 buffer
+TIC3 = 8X CMP signal (low-res pump encoder signal). Also fed into 16180988 IC.
+TIC4 = 4X CKP signal (from engine CKP). Also fed into 16180988 IC.
+TOC4 = backup injector pulse width generation
+TOC3 = I/O pin disables injector from TIO chip, timer channel used for 160 Hz task scheduler
+TOC2 = TCC PWM generation
+PD5 = powerdown to power supply IC
+PG0 = ODM2-7
+PG1 = ITS-9 (ITS phase)
+PG2 = ITS-6 (ITS phase)
+PG3 = SCI transceiver control
+AN Mux:
+
+MUX0 = pin B8, glow plug voltage monitor
+MUX1 = pin B11, fuel temperature signal
+MUX2 = pin A12, diagnostic switch input
+MUX3 = Pin C8, ECTS voltage
+MUX4 = pin B9, spare, 220k pulldown
+MUX5 = pump calibration
+MUX6 = QDM1-14 fault input
+MUX7 = pin C13, glow plug relay supply voltage
+MUX8 = QDM2-14 fault input
+MUX9 = pin B4, A/C request
+MUX10 = pin B12, intake air temperature
+MUX11 = pin D10, optical sensor 5V power supply
+MUX12 = Pin B5, unused, 20V range, 3k pullup to key power
+MUX13 = pin C9, Transmission temperature sensor
+MUX14 = APP 2 sensor 5V power supply
+MUX15 = unused, grounded on input mux
+IOR:
+
+1400.7 = PCS Low Drive
+1400.6 = TCC on/off output (4L60E)
+1400.5 = shift solenoid
+1400.4 = shift solenoid
+1400.3 = EGR vent valve
+1400.2 = Service Throttle Lamp
+1400.1 = ITS Enable
+1400.0 = Glow plug relay enable
+1402.7 = AMUX3
+1402.6 = AMUX2
+1402.5 = AMUX1
+1402.4 = AMUX0
+1402.3 = Pin E2 - 4WD axle switch
+1402.2 = Pin E3 - Performance shift mode switch
+1402.1 = Pin E4 - Manual shift mode switch
+1402.0 = Pin F3 - cruise on/off
+1404.7 = Pin F11 - cruise resume/accel
+1404.6 = Pin F15 - cruise set/coast
+1404.5 = Pin E10 - PRNDL B
+1404.4 = Pin E9 - PRNDL C
+1404.3 = Pin E8 - PRNDL A
+1404.2 = Pin F5 - TCC Brake Switch
+1404.1 = Pin A6 - Brake Switch
+1404.0 = Pin A6 - PTO request
+1407.3 = MIL
+1407.2 = Read pump trim resistor enable
+1407.1 = Pin C9 Transmission Temp Pullup Select
+1407.0 = Pin C8 IATS Pullup Select
+1408 (PWM) = PCS current control
+140A (PWM) = Boost modulator control
+140C (PWM) = spare, not sure what it is used for yet. Probably the 3-2 shift solenoid, 4L60E.
+140E (PWM) = EGR frequency
+TIO:
+
+1AFA.1 = ODM chip select to retrieve diagnostic status
+1AFA.2 = ODM chip select to retrieve diagnostic status
+1872 = closure time response
+187C = timing delay counter
+187E = fuel quantity counter
+1880 = split pulse delay counter
+1882 = pilot quantity counter (first pulse)
+16193570 ECM (1996+)
+Parts on the OBD-2 version of the board (16216588):
+
+16055199 = voltage regulator
+16166240 = quad driver module with diagnostics
+16034993 = stepper motor driver
+20686 = SAE J1850 transceiver and controller
+66285 = PLCC-68, Delphi IOR, mapped at $1400
+16202476 = PLCC-68, MC68HC11F1
+39985 = PLCC-68, timer I/O module
+16183784 = AN28F010 128k by 8 flash memory module
+16206550 = ?
+ 
+I/O Assignments:
+
+AN0 = APP
+AN1 = APP
+AN2 = Transmission force current monitor
+AN3 = APP
+AN4 = battery voltage
+AN5 = boost pressure, via Sallen-Key filter
+AN6 = analogue mux
+AN7 = EGR/baro pressure, via Sallen-Key filter
+PAI = 4004 pulse per mile VSS input
+TIC1 = Pin C15, VSS
+TIC2 = Pin C12, transmission input shaft speed, through 84523 buffer
+TIC3 = 8X CMP signal (low-res pump encoder signal). Also fed into 16180988 IC.
+TIC4 = 4X CKP signal (from engine CKP). Also fed into 16180988 IC.
+TOC4 = backup injector pulse width generation
+TOC3 = I/O pin disables injector from TIO chip, timer channel used for 160 Hz task scheduler
+TOC2 = TCC PWM generation
+PD5 = powerdown to power supply IC
+PG0 = ODM2-7
+PG1 = ITS-9 (ITS phase)
+PG2 = ITS-6 (ITS phase)
+PG3 = Firmware bank selection
+AN Mux:
+
+ 
+
+MUX0 = pin B8, glow plug voltage monitor
+MUX1 = pin B11, fuel temperature signal
+MUX2 = pin A12, diagnostic switch input
+MUX3 = Pin C8, ECTS voltage
+MUX4 = pin B9, spare, 220k pulldown
+MUX5 = pump calibration
+MUX6 = QDM1-14 fault input
+MUX7 = pin C13, glow plug relay supply voltage
+MUX8 = QDM2-14 fault input
+MUX9 = pin B4, A/C request
+MUX10 = pin B12, intake air temperature
+MUX11 = pin D10, optical sensor 5V power supply
+MUX12 = Pin B5, unused, 20V range, 3k pullup to key power
+MUX13 = pin C9, Transmission temperature sensor
+MUX14 = APP 2 sensor 5V power supply
+MUX15 = Flash memory Vpp monitor
+IOR:
+
+1800.7 = PCS Low Drive
+1800.6 = TCC on/off output (4L60E)
+1800.5 = shift solenoid
+1800.4 = shift solenoid
+1800.3 = EGR vent valve
+1800.2 = Service Throttle Lamp
+1800.1 = ITS Enable
+1800.0 = Glow plug relay enable
+1802.7 = AMUX3
+1802.6 = AMUX2
+1802.5 = AMUX1
+1802.4 = AMUX0
+1802.3 = Pin E2 - 4WD axle switch
+1802.2 = Pin E3 - Performance shift mode switch
+1802.1 = Pin E4 - Manual shift mode switch
+1802.0 = Pin F3 - cruise on/off
+1804.7 = Pin F11 - cruise resume/accel
+1804.6 = Pin F15 - cruise set/coast
+1804.5 = Pin E10 - PRNDL B
+1804.4 = Pin E9 - PRNDL C
+1804.3 = Pin E8 - PRNDL A
+1804.2 = Pin F5 - TCC Brake Switch
+1804.1 = Pin A6 - Brake Switch
+1804.0 = Pin A6 - PTO request
+1807.3 = MIL
+1807.2 = Read pump trim resistor enable
+1807.1 = Pin C9 Transmission Temp Pullup Select
+1807.0 = Pin C8 IATS Pullup Select
+1808 (PWM) = PCS current control
+180A (PWM) = Boost modulator control
+180C (PWM) = spare, not sure what it is used for yet. Probably the 3-2 shift solenoid, 4L60E.
+180E (PWM) = EGR frequency
+TIO:
+
+ 
+
+16FA.1 = ODM chip select to retrieve diagnostic status
+16FA.2 = ODM chip select to retrieve diagnostic status
+1472 = closure time response
+147C = timing delay counter
+147E = fuel quantity counter
+1480 = split pulse delay counter
+1482 = pilot quantity counter (first pulse)
+140C = MAF time-since-last-pulse (pin C3 of the 32 pin BROWN connector, NOT pin E1 (or sometimes called pin C1 of connector C3). THIS IS WRONG in some service schematics!
+140A = MAF pulse counter
+ 
+
+This is a 68HC11 processor which should be very similar to that used in the OBD-I version. It is a bit unusual (to my mind) to use a 68HC11 on the OBD-II ECM when pretty much all of the OBD-II petrol ECM's went to 68332's.  I guess Ford pushed the EEC-V (8065, a 8096 variant) just into the 2000's before going over to the PowerPC's so why not, I guess. Just to be a pain in the arse, the flash memory has some of its address lines swapped around. There's space for two 32k memory pages (bank swapped using pin PG3) and one 24k non-banked page shared between calibration and common (non-banked) code. Communication is via SAE J1850 instead of SCI.
+
+The Pump (and its control algorithms) - both OBD-I and OBD-II
+How does the pump actually work, and how is it controlled? It's not really that hard. I could write this sort of code in my sleep.
+
+The optical sensor has a 64 pulse per cylinder and a 1 pulse per cylinder track. The 1 pulse per cylinder track fires at the pump reference location which is 22.2 engine crank degrees before the start of injection. This pulse is nominally timed at 25.66 crank degrees before TDC of the engine - this is performed by doing the TDC reference offset procedure. This procedure assumes that the timing of the engine CKP is spot-on, and the pump is out. This also means that the most retarded SOI that the pump is normally capable of is 3.5 degrees of advance. Since the most retarded idle timing I have seen is about 6 crank degrees, that gives sufficient margin to accept the +/- 2 degrees allowed in the TDC offset procedure. Note that these timing values only count at idle. Due to variations in how a pump works, the actual timing of injection will vary. Note that in theory, the TDC offset procedure should not even be necessary. The TDC information is constantly there and could be used to learn the offset during normal operation.
+
+When looking at a scan tool, there are several values displayed. The value 'Actual Injection Pump Timing' which shows about 28 crank degrees at idle, is the engine clock count (in engine degrees) between the injection pump reference pulse and the TDC reference pulse, corrected for TDC offset. The measured injection timing (around 6 degrees at idle) is then taken from the actual pump timing value, then subtract out the 22.2 crank degree reference-to-SOI offset. The desired injection pump timing simply comes from a summation of three lookup tables - base injection timing, ECTS adder, barometric adder, and IATS adder. That's it - it's actually pretty simple.
+
+With these two numbers, the ITS stepper motor is moved back-and-forth, trying to maintain the measured injection timing at the actual injection timing. If these values vary more than a couple of degrees from each other, a DTC will set.
+
+The injection metering pulse width (which is in crank degrees, and NOT in milliseconds), comes basically from the pump mapping tables. It is the summation of two pump mapping tables, which contains the number of crank degrees from the pump reference to EOI (end-of-injection). One mapping table is the base delivery vs. pump rotation. The other includes pumping efficiencies and is dependant on pump speed. The base pump map table is crank degrees from RPM and desired fuel quantity (in cubic millimetres). The pump resistor calibration causes a small shift in the pump mapping tables - maybe by one or two crank degrees. The pumping cycle at idle is set up so that the metering valve closes at the pump reference location. It actually accomplishes this by generating a time delay of 83.58 crank degrees from the previous pump reference location. The 6.42 crank degrees to make it 90 is calculated as the measured injection opening delay of about 1.7 milliseconds at idle. The 'injector pulse width' shown on the scan tool is actually the injector response time. It is measured by monitoring the dip in metering valve solenoid current as the armature moves. Many other diesel engines using 12V injection actuation (Detroit Diesel, Cummins CAP system) do this measurement so it's not that unusual.
+
+If you like graphics, here is a timing diagram.
+
+Optionally, the metering valve can be closed later in the pumping cycle - about 12 or 15 crank degrees - without affecting fuel metering significantly. This is because the normal spill valve closure time is designed to be in a flat spot of the camring so that the normal variance in valve closing time does not affect fuel timing. In a backup mode, valve closing may be used to control fuel timing, but normally the engine is running in a highly derated mode.
+
+The ECM supports split injection. I have worked on the Cummins ISC which also supported split injection. It really does help warmup. But the calibration file doesn't seem to use split injection, and I'm wondering if the cold warmup would be more pleasant with it. I do not know the thermodynamic properties of split injections in a prechamber diesel. On a direct injection engine, the pilot injection really does make the engine much more pleasant. It's certainly a lot quieter and smoother, anyways. The firmware in this ECM does not handle split injection very well - it 'supports' it but not well. For one, the firmware does not compensate for spilled fuel. The other is that the algorithm splits after the pump maps which does not account for the dead zone in metering. I don't think anyone gave split injection even an attempt given that the software is a bit goofy.
+
+A few of the other functions are pretty obvious. EGR is simply a servo loop that sets the MAP sensor to the desired pressure value. During highway operation the EGR system is turned off. It is only used in city driving. Boost pressure control is also pretty obvious. It works exactly the same way as the EGR system. The transmission uses pretty much the same code and logic as the gasoline versions. For some drivetrain applications, engine torque can be reduced based on torque converter slip (torque multiplication).
+
+Back to the ECM hardware (and a bit of software).... Counter Logic:
+
+Engine clock counts is in units of 8192 / 720 crank degrees
+Injection Timing Counter: Start at pump reference, stop at TDC reference, count in engine clock counts
+Injection Response Counter: Start at first injector energize, stop at closure detect, count in E/64 (fixed speed clock)
+Injection Delay Counter: Start at pump reference, stop and energize injector when counter reaches zero, count in engine clock counts. Normally around 75-90 crank degrees of delay.
+Injection Pilot/Initial Quantity Counter: start at injector energize, stop and turn off injector when counter reaches zero, count in engine clock counts. Normally between 20 and 35 crank degrees of delay.
+Injection Pilot to Main/Split Delay Counter: Start at main quantity counter expire, stop and turn on injector when counter reaches zero, count in engine clock counts. Not used in the 6.5L.
+Injection Split/Main Quantity Counter: start at pilot delay counter expire, stop and turn off injector when counter reaches zero, count in engine clock counts. Not used in the 6.5L.
+Note that in 'backup mode' - where the high-res pump signal is lost, the 68HC11 can generate injection timing signals based on the low-resolution inputs, however, that is not the preferred mode that the ECM wants to run in. In this case, the desired injector delivery is divided by engine speed to generate a pulse width. At this point, the pulse is then generated using the free-running TCNT system on the 68HC11.
+
+How do you get more power? Carefully. If the rest of the engine will take it, you need to calibrate the injection pump table to make full use of the pump. The total pumping range of the DS4 is about 80 or so cubic millimetres of fuel - even more than the mechanical DB pump. However, adding boost, lowering intake air temperature (via an intercooler), and careful mapping of injection timing is the 'right' way to do it. Injection timing should be mapped and adjusted for a careful balance of exhaust temperatures and NOx formation. High exhaust temperatures are obviously not good. But neither is high NOx - not only for the emissions aspect (you may not care about that), but also for engine life (and you probably do care about that). Excessive NOx indicates excessive cylinder pressures - pressures above the design rating of the engine. Diesel engines don't really knock at high power, they just blow up, leaving you on the side of the road with a lot of hot, oily pieces hanging out. Well, maybe not that often, but keep in mind that there are plenty of TSB's for detecting engine damage due to 'chipping'. The engine manufacturer knows the tolerance of their engine production and how far they can push *all* of that engine model. Yours may take more, or maybe not.
+
+Advancing the timing and cranking up the fuel is a great way to make a lot of smoke (ie. waste a lot of fuel), make only a little bit more power, and shorten the life of your engine. Add an air-to-air intercooler to your 6.5L diesel engine and it will be a lot happier. You will get more power, lower exhaust emissions (not that most people care about that - it's a side benefit), and longer engine life. I'm not going to go plugging the EGR system, at least not on my truck. The engine is timed and calibrated assuming the EGR system is working, and I have a bit of a concern for the environment. In particular, what the EGR system goes after - the nitrogen oxides that cause the brown haze.
+
+I'm aware of some quotes and criticisms of this writeup, especially regarding EGR removal and that sort of thing. I can't claim that the 6.5L will blow up or melt or whatever if you pull off your EGR system - probably it won't. EGR lowers the PEAK combustion pressure while broadening its shape - slowing the burn. In order to optimize power and fuel efficiency while reducing NOx, the engine calibrator normally will compromise between EGR and timing to give an acceptable ratio of PM (particulates) and NOx. By increasing EGR rate you slow down the burn and to not drop power or efficiency, you have to advance the injection timing a bit. Gasoline engines do this, as well. But in a gasoline engine knock is occasionally expected so the knock detection system will prevent engine damage. Back to NOx/PM. In this art compromise, you can increase PM and lower NOx to meet the emissions requirements, or you can raise NOx and lower PM. Lowering NOx may raise exhaust temperatures and drop efficiency so you have those two items to worry about, too. Whether or not 'a bit' is an issue depends on your design margins. I have seen engines blow up with just small things wrong with the controller - apparently they had little margin for error. I have seen natural gas engines that would melt pistons without EGR - engine knocking. I'm not making that up, it's well published. A certain well-known natural gas engine needed to have its redline lowered from 2400 to 2200 - well below the mechanical limits of the engine. That was because they could not control EGR tightly enough at full power conditions to prevent knocking - that's right, EGR at full power. That engine had little margin and needed EGR to control engine knock and exhaust temperatures even at full-tilt operation. The 6.5L may have lots of margin and may 'take it'. I would guess that the injection timing of the non-EGR 6.5L engines is less advanced than the EGR-equipped versions.
+
+The other thing I'm aware of are some posts saying that this emissions stuff is government communist crap since cows emit more than engines. But cows only emit substantial quantities of CO2 and CH4, both fairly harmless. Perhaps greenhouse contributors but I'm not too worried about that. Diesel engines without aftertreatment spew out a toxic concoction of nitric oxide (acid rain, brown smog, respiratory problems, rapid tarnishing of copper pub tables and silverware), carbon monoxide (competes for oxygen transport in animals - it suffocates you), unburned hydrocarbons which include some nasty circular benzene-ish compounds (known carcinogens), and particulate matter (also carcinogenic and respiratory irritants). Perhaps the tailpipe should discharge right into the cab of the vehicle so the operator of the vehicle can enjoy their exhaust as much as the people behind them.
+
+My background, by the way, is an engine management designer and calibrator, and I've blown up a bit of stuff here and there. Including $10,000 prototype catalytic converters, a few engines, and even a dyno.
