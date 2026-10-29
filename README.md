@@ -7,7 +7,7 @@ Ghidra project is something I have but would never trust, had my fun with it but
 
 Wanted to see if 4l60e code could be executed on board, tables are there but nothing calls them
 
-I have other 6.5 calibrations without padding attached as well, probably will dump them into individual assembly.txt files when I feel like it
+I have other 6.5 calibrations without padding attached as well, probably will dump them into individual assembly.txt files when I feel like it, they all share the same OS, calibrations are different.
 
 Have patched code for the deadband bug referenced by 1000cows, actually reads a value instead of RAM
 
