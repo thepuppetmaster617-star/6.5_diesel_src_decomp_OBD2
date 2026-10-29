@@ -1,0 +1,170 @@
+GM 6.5L DIESEL ECM 16216588 (OBD2)
+==========================================================================================
+Bin: 16216588 OS + cal 09389101 (DBRZ).   Updated 2026-10-28.
+Everything here was checked against the bytes of asm_hc11_b0+1_6.5_diesel.txt (byte-for-byte equal
+to the bin). Ghidra was not used for this pass.
+
+FILES
+  asm_hc11_b0+1_6.5_diesel.txt         original listing (unchanged)
+  asm_hc11_b0+1_6.5_diesel_FIXED.txt   same file, only the ECTS bug fixed (2 bytes, see BUGS)
+  asm_hc11_b0+1_6.5_diesel_NOTED.txt   fully noted listing, traced from the file, bug fixed
+  6.5_diesel_OBD1_deep_dive.txt        long report (OBD1 matching, all routine summaries)
+  16216588_asm/                        rebuildable asm11 source (build.py all = 44/44 byte-identical;
+                                       tools/make_noted_listing.py makes the NOTED file)
+  Pinout sheets: 1994 OBD1 (C215 blue 32p, C216 pink 32p, C217A pink 24p), 1999 OBD2 (C1-C3).
+
+
+1. HARDWARE
+------------------------------------------------------------------------------------------
+CPU      MC68HC11F1, big-endian. RAM 0000-03FF internal + 1810-1FFF external. EEPROM 0E00 (seed/key).
+Flash    28F010 128K, address lines A1/A13, A2/A12, A3/A11, A10/A14 swapped on the chip.
+Map      bank0 $2000-$FFFF (cal $2000-$58FF, common code $5900-$7FFF, bank-0 code $8000+)
+         bank1 $8000-$FFFF, selected by PORTG bit 3. Common code calls bank 1 through the
+         far-call wrappers at 7C23-7E3F (ldx #$1002 / bset 0,x,#$08 / jsr / bclr).
+Chips    IOR 66285 at $1800 (outputs, switch inputs, 4 PWM pairs), TIO 39985 at $1400-$16FF
+         (pump encoder, CKP, injection counters, PCS current), J1850 controller at $0C02/$0C03.
+Checksum 16-bit sum of bank0 $2006-$FFFF + bank1 $8000-$FFFF, stored at $2004.
+
+IOR $1800 outputs            .0 glow relay  .1 ITS (timing stepper) enable  .2 Service Throttle lamp
+                             .3 EGR vent  .4/.5 shift solenoids A/B  .6 glow wait-lamp (see note)
+                             .7 PCS low drive
+IOR $1802                    .7-.4 AMUX select, .3 4WD, .2 perf shift sw, .1 manual shift sw, .0 cruise on/off
+IOR $1804 inputs             .7 resume/accel .6 set/coast .5/.4/.3 range pressure sw B/C/A .2 TCC brake
+                             .1 brake .0 PTO
+IOR $1807                    .3 MIL .2 pump trim resistor read .1 trans temp pullup .0 IAT pullup
+IOR PWM pairs (freq, duty)   1808/1809 TCC PWM solenoid (4L80E)   180A/180B boost (wastegate)
+                             180C/180D 4L60E 3-2 solenoid channel - not used   180E/180F EGR
+Timer    TIC1 VSS, TIC2 trans input shaft, TIC3 8X pump cam, TIC4 4X crank, TOC3 160 Hz scheduler,
+         TOC4 backup injection pulse, TOC1 backup fuel, TOC2 NOT USED. PD5 power-down.
+ADC      AN0/1/3 pedal APP1-3, AN2 force-motor current, AN4 battery, AN5 boost, AN6 AMUX, AN7 EGR/baro.
+AMUX     MUX0 glow V, 1 fuel temp, 2 diag sw, 3 ECT, 4 spare, 5 pump cal, 6 QDM1 fault, 7 glow
+         relay supply, 8 QDM2 fault, 9 A/C request, 10 IAT, 11 optical 5V, 13 trans temp,
+         14 APP2 5V, 15 flash Vpp. Results in RAM 1941-1950.
+
+Corrections to the 1000cows notes (its OBD2 list is the OBD1 list with $14xx -> $18xx):
+  - TOC2 is not the TCC PWM on OBD2. OBD1 made the TCC PWM in software on TOC2/PA6; OBD2 uses the
+    IOR PWM 1808/1809 and never touches TOC2 (vector = rti, TCTL1 = 0).
+  - 1808/1809 is not "PCS current": 1809 goes to 0 on brake and when the TCC command is 0. The PCS
+    force-motor current is commanded through TIO $1400.
+  - 1800.6 is driven only by the glow code (with the glow relay, plus a glow timer) = wait lamp.
+    On the OBD1 board it was the 4L60E TCC on/off solenoid.
+
+
+2. PINOUTS
+------------------------------------------------------------------------------------------
+1999 (OBD2): C1 brown 32p, C2 brown 24p, C3 blue 32p - see the 1999 PCM pinout sheets.
+  C3-C4 1-2 shift, C3-C6 2-3 shift, C3-C5 TCC PWM sol, C1-C7/C15 PCS hi/lo, C1-D1/D11 input speed,
+  C3-C7 wait-to-start lamp, C3-D14 wastegate, C3-C16/D12 EGR (S engine). No 3-2 solenoid pin.
+1994 (OBD1) sheets: 4L60E-only pins: C217A-A2 3-2 control solenoid,
+  C215-C6 TCC on/off solenoid, C216-D8 2K-pulse VSS. C215-C11 TCC PWM, C216-C6/C11 PCS hi/lo.
+Pin letters differ between 1994, 1999 and the 1000cows notes - always say which source.
+
+
+3. HOW THE OS RUNS
+------------------------------------------------------------------------------------------
+Reset 5900 area: init HC11 (cal table 50B6), IOR (cal table 5099), TIO (b1:8000 data), RAM.
+Background loop Main_task_scheduler 5B5C; 160 Hz TOC3 tick -> 12.5/25/50 ms jobs (OBD1 names
+_run_12ms_job, _run_25ms_job 80CF, _run_50ms_job 8D76).
+Table lookups: lookup_2D_table 6D06 (X=table [N][N+1 pts], A=input), lookup_3D_table 6D20
+(X=table, A=column, B=row, header cols=(h&F)+2 rows=(h>>4)+2), 17-point no-header 66E5,
+offset tables 66C8/6702, curve 67D3.
+Scaling: RPM byte N*18.75 (engine_RPM 1986 is 16-bit), VSS mph N*0.5, fuel mm3 N*0.3125,
+battery N/10 V, boost kPa N, baro N*0.5, timing deg N*0.1, pedal % N/2.56, gear = N+1.
+Option bytes: 200B (.1 turbo .2 TCM/no internal trans .3 low-res limp .7 PTO ...),
+200C (.0 delta-fuel limiter .4 trans torque reduction .5/.6 baro source), 200D (.3 trans
+sensors on ECM ...). Full legend at the top of the cal in the NOTED file.
+
+
+4. FUEL / PUMP / TIMING (from the code + 1000cows)
+------------------------------------------------------------------------------------------
+Stanadyne DS4 with optical encoder (64/cyl + 1/cyl). Pump reference = 22.2 crank deg before SOI.
+Fuel = crank degrees from pump reference to end of injection: READ_PUMP_MAPS (b1:963B) adds the
+low/high-fuel 3D pump map and the 2D table, then pump-resistor trim (Pump_Cal_Ptr from the table at
+b1:81D1). Fuel tables clip at fuel_quantity $133 (96 mm3) but fuel_quantity is a byte (79.7 mm3 max).
+Timing: desired = base + ECT + baro + IAT adders; ITS stepper drives measured timing to it.
+Limits: over-rev cut $E7 = 4331 rpm (150 rpm hysteresis), safety limiter 203B-203E, governor 2271-2287.
+Backup mode (no hi-res signal): TOC4 backup pulses from the 8X cam / 4X crank, heavily derated.
+
+
+5. TRANSMISSION (4L80E as built)
+------------------------------------------------------------------------------------------
+Outputs: shift A/B 1800.4/.5, TCC PWM 1809, PCS force motor via TIO $1400 (current loop,
+FORCE_MTR_ITERM). Inputs: VSS TIC1, input shaft TIC2, range switches 1804.3-.5, trans temp MUX13.
+Speeds: calc_input_shaft_speed_raw 9612, CALC_OSS_SPEED 96C4, shared period math 96F9,
+"throttle" for shift/TCC tables calc_tp_for_transmission 9746 (pedal or cruise fuel).
+Shift schedule: calc_shift_request_E4B2 uses pointer sets E3B4 (up) / E3C0 (down) / E3CC (RPM):
+[pattern bit mask][stride] records pointing at 17-point cal curves 3920-3B0B.
+TCC apply/release: records D4F7-D596, release logic E20A, slip PI DFEA.
+All 44 cals are 4L80E with input speed sensor (3864 = $80); "TCM" cals ($A0) hand the trans to an
+external controller.
+
+4L60E: no OS on file (OBD1 BPDP + 16 OBD2 families) has 3-2 or TCC-on/off control logic.
+  - 3-2 channel = IOR PWM 180C/180D. OBD1 set its freq to $7A (~50 Hz if the register is a
+    divider: $BF ~32 Hz EGR/boost, $09 force motor). OBD2 sets it to 0 ($50B2 freq, $50B4 duty).
+  - Bench test without code: $50B2 = $7A, $50B4 = $80 -> fixed 50% from key-on; probe the unused
+    C1/C3 pins. If nothing toggles, the driver is not fitted on the OBD2 board.
+  - Writing it: 3-2 duty table in cal, routine in the 50 ms trans job using shift_event_flags $77,
+    trans_gear_AT, VEHICLE_SPEED_0, engine_load_est_filtered. Free code: 7F14-7FFF (236 bytes, common)
+    or b1:FE8C-FFBE (307 bytes). A full 4L60E swap also needs range-switch decode (code at 9606),
+    shift solenoid pattern, TCC on/off, PCS curves and the no-input-speed mode (3864 bit 7 clear).
+
+
+6. J1850 DIAGNOSTICS (bank 1)
+------------------------------------------------------------------------------------------
+RX parser C8DD, request handler D449. Each mode has a 4-byte descriptor {min len, max len,
+continuation routine}, handler code at descriptor+4:
+  01 D637  02 D6C2  03 D743  04 D7DC  06 D7F2  07 D890  10 D92B  12 D97C  14 DAA0  17 DAB6
+  19 DB40  20 DC23  22 DC37  23 DCA1  27 DD39  28 DE81  29 DEB2  2A DECC  2C E068  34 E22A
+  36 E2C9  3B E34A  3C E5C9  3F E639  A0 E64C  A1 E683  AE E6B9
+PID records: cal tbl_56B7 to $5904, 5 bytes [PID][pointer][length]; pointer above $5099 = bank-1
+formatter routine. Mode $3B/$3C ID table E3D9 (40 IDs, incl. cal 2000-2003 and adapt cells).
+Security: mode $27, seed/key in EEPROM $0E00/$0E02; k_32A1 = $FF disables security.
+Mode $34/$36 download-and-run (CA64): code into RAM only, needs security + vehicle stopped - this is
+the flash-tool hook.
+
+
+7. TROUBLE CODES
+------------------------------------------------------------------------------------------
+Table 50EB-52B2: 114 records [bit mask][status byte][P-code BCD]. Set/clear DTC_set_clear b1:F8EB
+(far 7DA9), Y = record, A != 0 sets. Flags: current 0001, first set 0021, history 0287.
+MIL-class mask 37D0, two-trip mask 37DF, disable mask 37EE (all zero in this cal). MIL off after 3
+good trips, codes erased after 40 warm-ups.
+
+
+8. BUGS
+------------------------------------------------------------------------------------------
+FIXED  ECTS deadband, bank0 F77C (OBD2 address): cmpb <$03 (compare with RAM $0003) should be cmpb #$03.
+       $0003 is the current-DTC byte for P0216/P0218-P0223/P0225. With none of those set the deadband
+       is 0, so ECTS_DIR_FILTERED (idle RPM vs ECT input) only follows coolant up, never down.
+       Fix: F77C D1 -> C1, ROM checksum $D7C1 -> $D7B1. Patched in the OBD2 code only: filter RAM $19DB,
+       coolant_temp $1929, DTC byte from this bin's table at $50EB. OBD1 has the same bug in extended form
+       (cmpb >L0003, 3 bytes) - used only to recognise the pattern.
+Open   F28B PID formatter: saturation path stores $FFFF at 1D88 but returns X = 1D89 (stale byte).
+Open   FC76: the 3rd good trip of one code clears the whole MIL-request array (possible OEM quirk).
+Open   k_4D19/k_4D1A = 0 -> idiv by zero in the NA IAT derate (only runs with 200C bit 6, NA).
+Info   b1:9668-975F alternate pump-map routine is never run (jmp at 9665); its 7 maps at cal
+       2318-26B4 (XDF: "Desired EGR 1-7") and RAM 19C8 are unused. b1:9842 and 98AC have no callers.
+Info   Five spare rts bytes (b1 E9E6/E9E7/EA0C/EA24/EA4A) and a few skipped instructions
+       (66DA, 66E1, 7628, ABE0, AE75, B4E5, E326) are marked "no traced path" in the listing.
+
+
+
+9. FINAL CHECK PASS - TRACED STRAIGHT FROM THE TXT
+------------------------------------------------------------------------------------------
+  - The txt rebuilds the bin exactly (bank0 57,075 bytes + erased runs, bank1 32,768 bytes).
+  - Tracing with NO outside entry points (only reset/interrupt vectors, far-call wrappers, J1850
+    descriptors, verified code tables and the cal PID records) finds every routine the earlier
+    seeded trace found - nothing in the listing depended on Ghidra.
+  - Compared with the old txt layout: bank1 +2,418 bytes now code, 134 instructions realigned,
+    328 bytes moved from code to data; 667 routine banners (old: 85).
+  - Source project regenerated the same way: 44/44 calibrations still rebuild byte-identical.
+  - Every one of the 30,984 instructions decodes exactly as written, none overlap, no code falls
+    through into data, and every branch/call/table/vector/J1850/PID target lands on an instruction.
+  - Only exception: five calls into $0600-$07FF (6218, 8049, 8052, 823B, EE30) = factory development
+    hooks. Gated by a signature at $0600 or sys_state_flags.0 (never set); no memory there in
+    production and the J1850 download cannot write there - they never run. Named dev_hook_0600.
+  - Four far-call wrappers (7D31, 7D4F, 7D6D, 7D8B) clear PORTG.3: they let bank-1 code call bank-0
+    routines A491, 920A, 9291, 935D. Renamed far_b0_* (were far_b1_*).
+  - Names with "PCS" on the 1809 path (PCS_duty_cmd 1AF7, PCS_duty_out 1BAF, PCS_duty_from_pressure
+    D626) drive the TCC PWM solenoid on this board; noted in the listing, names left as they were.
+  - No OBD1 trouble-code numbers and no personal paths anywhere in the listings.
