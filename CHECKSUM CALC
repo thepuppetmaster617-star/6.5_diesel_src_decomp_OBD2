@@ -1,0 +1,2 @@
+checksum = ( sum of bank0 bytes $2006–$FFFF+ sum of bank1 bytes $8000–$FFFF ) mod $10000
+it is stored at 0x2004 if I remember correctly
